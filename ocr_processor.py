@@ -193,11 +193,24 @@ def extract_data(image_path):
         dim = (width, height)
         resized_cv = cv2.resize(gray_cv, dim, interpolation = cv2.INTER_LANCZOS4) # Use Lanczos for quality
 
-        # Apply Otsu's thresholding
-        _ , processed_cv = cv2.threshold(resized_cv, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        # Apply median blur to remove noise (kernel size 3x3)
+        blurred_cv = cv2.medianBlur(resized_cv, 3)
+
+        # Apply adaptive thresholding instead of Otsu's - Reverted
+        # processed_cv = cv2.adaptiveThreshold(
+        #     blurred_cv, 
+        #     255, # Max value
+        #     cv2.ADAPTIVE_THRESH_GAUSSIAN_C, # Method
+        #     cv2.THRESH_BINARY, # Threshold type
+        #     21, # Block size (needs to be odd) - Increased from 11
+        #     1  # Constant subtracted from the mean - Changed from 2
+        # )
+
+        # Apply Otsu's thresholding (using the blurred image)
+        _ , processed_cv = cv2.threshold(blurred_cv, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
         # Save preprocessed image for debugging (optional)
-        # cv2.imwrite("preprocessed_debug.png", processed_cv)
+        cv2.imwrite("preprocessed_debug.png", processed_cv)
         
         # Convert processed OpenCV image back to PIL format for pytesseract if needed
         # Although pytesseract can often handle numpy arrays directly
