@@ -1,5 +1,6 @@
 Pillow
-pytesseract
+# pytesseract # Removed
 opencv-python
 pandas
-tksheet 
+tksheet
+easyocr 

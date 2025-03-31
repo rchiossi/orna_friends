@@ -5,6 +5,7 @@ import numpy as np
 from PIL import Image
 import os
 import pandas as pd # Import pandas for easier data handling
+import easyocr # Import easyocr
 
 # --- Configuration ---
 # You might need to configure the path to the tesseract executable
@@ -13,250 +14,278 @@ pytesseract.pytesseract.tesseract_cmd = r'/opt/homebrew/bin/tesseract' # <--- VE
 # Example for Windows:
 # pytesseract.pytesseract.tesseract_cmd = r'C:\\Program Files\\Tesseract-OCR\\tesseract.exe'
 
-# --- Coordinate-Based Parsing Function ---
-def parse_ocr_data(ocr_dict):
-    """Parses the structured OCR data (dictionary) to find username, level, and class."""
-    results = []
-    n_boxes = len(ocr_dict['level']) # Number of detected elements (words, lines, etc.)
-
-    # Convert the dictionary to a pandas DataFrame for easier manipulation
-    df = pd.DataFrame(ocr_dict)
-
-    # --- Initial Filtering & Preparation ---
-    # 1. Convert coordinate columns to numeric, coercing errors
-    for col in ['left', 'top', 'width', 'height', 'conf']:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-
-    # 2. Filter out low confidence words (adjust threshold as needed)
-    # Increase confidence slightly? Maybe >= 50
-    # df = df[df['conf'] >= 50] # Keep words with confidence >= 50
-    df = df[df['conf'] >= 30] # Lower confidence threshold for PSM 11
-
-    # 3. Filter out empty or whitespace-only text, and very short text
-    df['text_stripped'] = df['text'].str.strip()
-    df = df[df['text_stripped'].astype(bool) & (df['text_stripped'].str.len() > 1)]
-
-    # 4. Filter out things that are clearly just noise symbols (like single chars remaining after strip)
-    df = df[~df['text_stripped'].isin(['=', '+', '-', ';', ':', 'A', '%', '&', 'i'])]
-
-    # 5. Calculate approximate vertical center for grouping lines
-    df['v_center'] = df['top'] + df['height'] / 2
-
-    # --- Group words into lines based on vertical proximity ---
-    lines = []
-    current_line = []
-    last_v_center = -1
-    vertical_threshold = 20 # Max vertical distance to be considered same line (Increased slightly)
-
-    df = df.sort_values(by=['top', 'left']).reset_index()
-
-    for index, row in df.iterrows():
-        # Check horizontal distance too? Maybe not needed if crop is good.
-        if not current_line or abs(row['v_center'] - last_v_center) < vertical_threshold:
-            current_line.append(row)
-        else:
-            # Start of a new line detected
-            if current_line:
-                # Sort words in the completed line by horizontal position
-                current_line.sort(key=lambda x: x['left'])
-                lines.append({'words': current_line, # Store individual words too
-                                'text': ' '.join([word['text_stripped'] for word in current_line]), 
-                                'top': min(word['top'] for word in current_line),
-                                'bottom': max(word['top'] + word['height'] for word in current_line)}) 
-            current_line = [row]
-        # Use the first word's v_center as the line's reference v_center
-        if current_line:
-             last_v_center = current_line[0]['v_center'] 
-        
-    # Add the last line
-    if current_line:
-        current_line.sort(key=lambda x: x['left'])
-        lines.append({'words': current_line,
-                        'text': ' '.join([word['text_stripped'] for word in current_line]), 
-                        'top': min(word['top'] for word in current_line),
-                        'bottom': max(word['top'] + word['height'] for word in current_line)}) 
-
-    # Pre-filter lines that are just dates before pairing logic
-    # Use search instead of match to find date anywhere in the line
-    date_pattern = re.compile(r"\d{1,2}/\d{1,2}/\d{4}") 
-    filtered_lines = [line for line in lines if not date_pattern.search(line['text'])]
-
-    # print("\n--- Filtered Lines (Coordinate-based, No Dates) ---")
-    # for line in filtered_lines: print(f"{line['text']} (Top: {line['top']})")
-    # print("--- End Filtered Lines ---")
-
-    # --- Identify Player Entries by Finding Level line and looking back ---
-    processed_username_indices = set()
-    for i, line in enumerate(filtered_lines):
-        # Check if the current line looks like a Level/Class line
-        level_class_match = re.search(r"(?:Level|Lavel|LeveL|lavel|Seeelevcle)\s*(\d{1,3})\s+(.+)", line['text'], re.IGNORECASE)
-        
-        if level_class_match:
-            level = int(level_class_match.group(1))
-            class_name_raw = level_class_match.group(2).strip()
-            
-            # Attempt to clean class name (remove trailing noise)
-            class_match = re.match(r"([a-zA-Z][a-zA-Z\s]+)", class_name_raw)
-            class_name = class_match.group(1).strip() if class_match else class_name_raw
-            if class_name.lower() == "snelleward": class_name = "Spellsword" # Correction
-            
-            # Check level sanity
-            if 1 <= level <= 300:
-                # Now look backwards for the closest plausible username line above it
-                username_candidate = None
-                username_line_index = -1
-                min_vertical_gap = float('inf')
-
-                # print(f"\nFound Level line {i}: {line['text']}") # DEBUG
-                for j in range(i - 1, -1, -1):
-                    potential_username_line = filtered_lines[j]
-                    # print(f"  Checking previous line {j}: {potential_username_line['text']}") # DEBUG
-                    # Check if already used
-                    if j in processed_username_indices:
-                        # print(f"    Skipping line {j}: Already used as username") # DEBUG
-                        continue 
-                        
-                    # Check vertical gap 
-                    vertical_gap = line['top'] - potential_username_line['bottom']
-                    line_gap_threshold = 75 # Allow slightly larger gap now (Increased again)
-                    # print(f"    Vertical Gap: {vertical_gap:.1f} (Threshold: {line_gap_threshold})" ) # DEBUG
-                    
-                    # Basic plausibility checks (not a level line, not search, decent length)
-                    is_plausible = ("level" not in potential_username_line['text'].lower() and \
-                                    len(potential_username_line['text']) > 1 and \
-                                    "Search..." not in potential_username_line['text'] and \
-                                    "Allies" not in potential_username_line['text'])
-                    # print(f"    Is Plausible Username? {is_plausible}") # DEBUG
-
-                    if is_plausible and 0 < vertical_gap < line_gap_threshold:
-                         # print(f"    Found Plausible Candidate at index {j}") # DEBUG
-                         # Found a plausible candidate, store it and its index
-                         # More refined username cleaning: remove leading noise like '+ '
-                         raw_username = potential_username_line['text']
-                         cleaned_username = re.sub(r"^[+=%&;:\s]*", "", raw_username).strip()
-                         if len(cleaned_username) > 1: # Ensure something remains after cleaning
-                             username_candidate = cleaned_username
-                             username_line_index = j
-                             # print(f"    Stored Username: '{username_candidate}'") # DEBUG
-                             break # Found the closest one, stop searching backwards
-                         # else:
-                             # print(f"    Username '{raw_username}' became empty after cleaning.") #DEBUG
-                    # elif is_plausible and vertical_gap >= line_gap_threshold:
-                         # print(f"    Skipping line {j}: Gap too large.") # DEBUG
-                         # Optimization: If gap is already too large, lines further up will also be too large
-                         # break # (Optional optimization)
-                    # elif not is_plausible:
-                        # print(f"    Skipping line {j}: Not plausible username.") # DEBUG
+# --- DELETED Tesseract-based functions (extract_data, parse_ocr_data) --- 
 
 
-                # If we found a valid username
-                if username_candidate and username_line_index != -1:
-                    # Final check for duplicates
-                    is_duplicate = False
-                    for entry in results:
-                        if entry['username'] == username_candidate and entry['level'] == level:
-                            is_duplicate = True
-                            break
-                            
-                    if not is_duplicate:
-                        results.append({
-                            'username': username_candidate,
-                            'level': level,
-                            'class': class_name
-                        })
-                        processed_username_indices.add(username_line_index) # Mark as used
-            
-    return results
+# --- Implementation using easyocr --- 
 
-# --- Main Extraction Function ---
-def extract_data(image_path):
-    """Extracts player data from the provided image path using coordinate-based OCR data."""
+# Initialize EasyOCR Reader (do this once, ideally outside the function if called repeatedly)
+# This will download models on first run
+# reader = easyocr.Reader(['en']) # Add other languages if needed e.g., ['en', 'fr']
+
+def extract_data_easyocr(image_path):
+    """Extracts player data using EasyOCR."""
     try:
-        # 1. Use PIL to open and crop the image 
+        # Initialize reader here for simplicity in testing
+        # Consider moving initialization outside for efficiency in real app
+        # print("Initializing EasyOCR Reader...") # DEBUG
+        # Specify gpu=False if you don't have a compatible GPU or CUDA installed
+        reader = easyocr.Reader(['en'], gpu=False) 
+        # print("EasyOCR Reader Initialized.") # DEBUG
+        
+        # 1. Use PIL to open and crop the image (same as Tesseract version)
         img_pil = Image.open(image_path)
         width, height = img_pil.size
-        # Using the original crop estimate, adjust if needed
-        crop_area = (0, int(height * 0.1), int(width * 0.7), int(height * 0.8)) 
+        crop_area = (0, int(height * 0.1), int(width * 0.7), int(height * 0.8))
         cropped_img_pil = img_pil.crop(crop_area)
-
-        # 2. Preprocessing using OpenCV on the cropped image
-        # Convert PIL Image to OpenCV format (NumPy array)
-        cropped_img_cv = cv2.cvtColor(np.array(cropped_img_pil), cv2.COLOR_RGB2BGR)
         
-        # Convert to grayscale
-        gray_cv = cv2.cvtColor(cropped_img_cv, cv2.COLOR_BGR2GRAY)
+        # Convert PIL image to format easyocr needs (numpy array or filepath)
+        # Using numpy array from PIL image:
+        cropped_img_np = np.array(cropped_img_pil)
+
+        # 2. Perform OCR using EasyOCR
+        # print(f"Running EasyOCR on {image_path}...") # DEBUG
+        ocr_results = reader.readtext(cropped_img_np, detail=1, paragraph=False) # paragraph=False gives word boxes
+        # print(f"EasyOCR finished. Found {len(ocr_results)} text blocks.") # DEBUG
         
-        # Upscale the image (e.g., 1.5x)
-        scale_factor = 1.5
-        width = int(gray_cv.shape[1] * scale_factor)
-        height = int(gray_cv.shape[0] * scale_factor)
-        dim = (width, height)
-        resized_cv = cv2.resize(gray_cv, dim, interpolation = cv2.INTER_LANCZOS4) # Use Lanczos for quality
-
-        # Apply median blur to remove noise (kernel size 3x3)
-        blurred_cv = cv2.medianBlur(resized_cv, 3)
-
-        # Apply adaptive thresholding instead of Otsu's - Reverted
-        # processed_cv = cv2.adaptiveThreshold(
-        #     blurred_cv, 
-        #     255, # Max value
-        #     cv2.ADAPTIVE_THRESH_GAUSSIAN_C, # Method
-        #     cv2.THRESH_BINARY, # Threshold type
-        #     21, # Block size (needs to be odd) - Increased from 11
-        #     1  # Constant subtracted from the mean - Changed from 2
-        # )
-
-        # Apply Otsu's thresholding (using the blurred image)
-        _ , processed_cv = cv2.threshold(blurred_cv, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-        # Save preprocessed image for debugging (optional)
-        cv2.imwrite("preprocessed_debug.png", processed_cv)
+        # --- Parse EasyOCR results --- 
         
-        # Convert processed OpenCV image back to PIL format for pytesseract if needed
-        # Although pytesseract can often handle numpy arrays directly
-        # processed_img_pil = Image.fromarray(processed_cv)
+        # 1. Process raw results into a DataFrame
+        results_list = []
+        for (bbox, text, prob) in ocr_results:
+            tl, tr, br, bl = bbox
+            left = int(min(tl[0], bl[0]))
+            top = int(min(tl[1], tr[1]))
+            right = int(max(tr[0], br[0]))
+            bottom = int(max(bl[1], br[1]))
+            v_center = top + (bottom - top) / 2
+            h_center = left + (right - left) / 2
+            results_list.append({
+                'left': left, 'top': top, 'right': right, 'bottom': bottom,
+                'v_center': v_center, 'h_center': h_center,
+                'text': text.strip(), 
+                'conf': prob
+            })
+        
+        if not results_list:
+            return [] 
+            
+        df = pd.DataFrame(results_list)
 
-        # 3. Perform OCR on the preprocessed image, getting detailed data
-        # Updated config: OEM 1 (LSTM), PSM 11 (Sparse), Disable Dictionaries
-        custom_config = r'--oem 1 --psm 11 -c load_system_dawg=0 -c load_freq_dawg=0' 
-        
-        # Pass the processed OpenCV image (numpy array) directly
-        ocr_data = pytesseract.image_to_data(processed_cv, config=custom_config, output_type=pytesseract.Output.DICT)
-        
-        # 4. Parse the structured OCR data
-        extracted_info = parse_ocr_data(ocr_data)
-        
-        return extracted_info
+        # 2. Filter noise 
+        min_confidence = 0.30 
+        df = df[df['conf'] >= min_confidence]
+        df = df[df['text'].str.len() > 0] 
 
-    except FileNotFoundError:
-        print(f"Error: Image file not found at {image_path}")
-        return []
-    except pytesseract.TesseractNotFoundError:
-        print("Error: Tesseract is not installed or not in your PATH.")
-        print("Please install Tesseract and configure the path in ocr_processor.py if needed.")
-        raise 
+        # Sort by vertical then horizontal position
+        df_sorted = df.sort_values(by=['top', 'left']).reset_index(drop=True)
+
+        # --- Removed full DataFrame print --- 
+
+        # print(f"EasyOCR: Filtered down to {len(df_sorted)} high-confidence text blocks.") # DEBUG
+
+        # --- Steps 3-6: Find Level, Username, Combine, Store --- 
+        parsed_data = []
+        processed_indices = set() 
+        level_keywords = ["level", "lavel", "leveel", "ievei"]
+
+        for index, row in df_sorted.iterrows():
+            if index in processed_indices:
+                continue
+
+            # 3. Find Level Keyword (Check if text block STARTS with Level)
+            if row['text'].lower().startswith('level'): 
+                level_word = row
+                # print(f"  [EasyOCR DEBUG] Found Potential Level Block: '{level_word['text']}' at index {index}") # DEBUG 
+                
+                level_val = None
+                class_name = None
+                number_word = None 
+                class_words = [] 
+
+                match = re.search(r"Level\s*(\d{1,3})\s*(.*)", level_word['text'], re.IGNORECASE)
+                if match:
+                    level_val = int(match.group(1))
+                    class_name_raw = match.group(2).strip()
+                    if class_name_raw: 
+                        class_name = class_name_raw
+                        number_word = level_word 
+                        class_words = [level_word] 
+                        # print(f"    [EasyOCR DEBUG] Parsed L={level_val}, C='{class_name}' from same block.") # DEBUG
+                
+                if level_val is not None and class_name is None:
+                    num_match_inline = re.search(r"Level\s*(\d{1,3})", level_word['text'], re.IGNORECASE)
+                    if num_match_inline and level_val == int(num_match_inline.group(1)):
+                        number_word = level_word 
+                        # print(f"    [EasyOCR DEBUG] Found Number {level_val} in Level block.") # DEBUG
+                    
+                    if number_word is not None:
+                        class_words_separate = [] 
+                        last_class_word = number_word 
+                        # print(f"      [EasyOCR DEBUG] Coords for {number_word['text']} (Index {number_word.name}): T={number_word['top']}, B={number_word['bottom']}, L={number_word['left']}, R={number_word['right']}") # DEBUG
+                        nw_idx = number_word.name 
+                        nw_bottom = number_word['bottom']
+                        nw_right = number_word['right']
+                        potential_classes_candidates = df_sorted.loc[
+                            # (df_sorted.index > nw_idx) & # REMOVED
+                            (df_sorted['top'] < nw_bottom + 25) & 
+                            (df_sorted['left'] > nw_right - 20) & 
+                            (df_sorted['left'] < nw_right + 210) 
+                        ]
+                        # print(f"      [EasyOCR DEBUG] Found {len(potential_classes_candidates)} candidates before head(5). First few: \n{potential_classes_candidates.head()}") # DEBUG
+                        potential_classes = potential_classes_candidates.head(5) 
+
+                        # print(f"      [EasyOCR DEBUG] Potential class DF size (after head): {len(potential_classes)}") # DEBUG
+                        for cls_idx, cls_row in potential_classes.iterrows():
+                            h_gap = cls_row['left'] - last_class_word['right']
+                            # print(f"        [EasyOCR DEBUG] Checking word '{cls_row['text']}' (Index: {cls_idx}). H gap: {h_gap:.1f}") # DEBUG
+                            if h_gap < 40: 
+                                class_words_separate.append(cls_row)
+                                last_class_word = cls_row
+                                # print(f"          [EasyOCR DEBUG] Added '{cls_row['text']}' to separate class words.") # DEBUG
+                            else:
+                                # print(f"          [EasyOCR DEBUG] H gap too large. Stopping class search.") # DEBUG
+                                break
+                        
+                        if class_words_separate: 
+                            class_name = " ".join([cw['text'] for cw in class_words_separate])
+                            class_words = class_words_separate 
+                            # print(f"    [EasyOCR DEBUG] Found Class '{class_name}' in separate block(s). L={level_val}") # DEBUG
+
+                if level_val is not None and class_name is not None and number_word is not None and class_words: 
+                     # print(f"  [EasyOCR DEBUG] Confirmed Block: L={level_val} C='{class_name}'") # DEBUG
+                     processed_indices.add(level_word.name) 
+                     processed_indices.add(number_word.name) 
+                     for cw in class_words:
+                         processed_indices.add(cw.name)
+
+                     search_bottom = min(level_word['top'], number_word['top']) - 5 
+                     search_top = search_bottom - 170 
+                     search_left = 0
+                     search_right = max(level_word['right'], number_word['right'], class_words[-1]['right']) + 50
+                     
+                     username_candidates_df = df_sorted[
+                         (df_sorted['bottom'] <= search_bottom) &
+                         (df_sorted['top'] >= search_top) &
+                         (df_sorted['right'] >= search_left) &
+                         (df_sorted['left'] <= search_right) &
+                         (~df_sorted.index.isin(processed_indices))
+                     ].copy() 
+
+                     username = None
+                     username_indices = []
+                     if not username_candidates_df.empty:
+                         username_candidates_df['line_group'] = (username_candidates_df['v_center'].diff().abs() > 15).cumsum()
+                         grouped = username_candidates_df.groupby('line_group')
+                         
+                         potential_usernames = []
+                         for name, group in grouped:
+                             sorted_group = group.sort_values('left')
+                             potential_usernames.append({
+                                 'text': ' '.join(sorted_group['text']), 
+                                 'indices': sorted_group.index.tolist(),
+                                 'bottom': sorted_group['bottom'].max(),
+                                 'top': sorted_group['top'].min()
+                             })
+
+                         best_u_line = None
+                         min_u_gap = float('inf')
+                         if potential_usernames: 
+                             # print(f"    [EasyOCR DEBUG] Found {len(potential_usernames)} potential username lines above.") # DEBUG 
+                             for u_line in potential_usernames:
+                                 gap = level_word['top'] - u_line['bottom']
+                                 if 0 < gap < min_u_gap:
+                                     min_u_gap = gap
+                                     best_u_line = u_line
+                             
+                         if best_u_line:
+                             # print(f"      [EasyOCR DEBUG] Selected best username line: '{best_u_line['text']}'") # DEBUG 
+                             raw_username = best_u_line['text']
+                             username_indices = best_u_line['indices']
+                             best_u_line_top = best_u_line['top']
+                             best_u_line_bottom = best_u_line['bottom']
+                             
+                             combined_u_line = False
+                             best_u_line_group_idx = username_candidates_df.loc[best_u_line['indices'][0]]['line_group'] 
+                             line_above = None
+                             for u_line in potential_usernames:
+                                 if username_candidates_df.loc[u_line['indices'][0]]['line_group'] == best_u_line_group_idx - 1:
+                                     line_above = u_line
+                                     break
+                             
+                             if line_above and line_above['text'].endswith('-'):
+                                 gap_between = best_u_line_top - line_above['bottom']
+                                 combine_threshold_revised = 90 
+                                 if 0 < gap_between < combine_threshold_revised:
+                                     # print(f"      [EasyOCR DEBUG] Combining line above '{line_above['text']}' with selected line '{best_u_line['text']}' due to hyphen.") # DEBUG
+                                     raw_username = line_above['text'].rstrip() + best_u_line['text'] 
+                                     username_indices = line_above['indices'] + best_u_line['indices']
+                                     processed_indices.update(line_above['indices']) 
+                                     combined_u_line = True
+
+                             cleaned_username = re.sub(r"^[^a-zA-Z0-9\[\]]*", "", raw_username).strip()
+                             cleaned_username = re.sub(r"[^a-zA-Z0-9-]*$", "", cleaned_username).strip() 
+                             if '"' in cleaned_username and ' ' in cleaned_username:
+                                 parts = cleaned_username.split(' ')
+                                 if len(parts) > 1 and parts[-1]: cleaned_username = parts[-1]
+
+                             if len(cleaned_username) > 1:
+                                 username = cleaned_username
+                                 # print(f"        [EasyOCR DEBUG] Final Cleaned Username: '{username}'") # DEBUG 
+
+                     if username:
+                         is_duplicate = False
+                         for entry in parsed_data:
+                             if entry['username'] == username and entry['level'] == level_val:
+                                 is_duplicate = True
+                                 break
+                         if not is_duplicate:
+                             # print(f"          [EasyOCR DEBUG] Appending result: {username}, {level_val}, {class_name}") # DEBUG 
+                             parsed_data.append({
+                                 'username': username,
+                                 'level': level_val,
+                                 'class': class_name
+                             })
+                             for idx in username_indices:
+                                 processed_indices.add(idx)
+
+        return parsed_data
+
     except ImportError:
-        print("Error: pandas library not found. Please install it: pip install pandas")
-        raise
+        print("Error: easyocr library not found or dependencies missing.")
+        print("Please install it: pip install easyocr")
+        print("(This might also download PyTorch/TensorFlow based on your system)")
+        return [] 
     except Exception as e:
-        print(f"An error occurred during coordinate-based OCR processing: {e}")
-        # import traceback
-        # traceback.print_exc()
+        print(f"An error occurred during EasyOCR processing: {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
 # Example usage (for testing):
 if __name__ == '__main__':
     # Use the actual image path provided
-    test_image_path = 'images/Screenshot_2025-03-31-09-44-48-24_fba058fbcaeda824c55dd11029f3cefb.jpg' 
+    # test_image_path = 'images/Screenshot_2025-03-31-09-44-48-24_fba058fbcaeda824c55dd11029f3cefb.jpg' # First image
+    test_image_path = 'images/Screenshot_2025-03-31-10-43-07-78_fba058fbcaeda824c55dd11029f3cefb.jpg' # Second image
     if os.path.exists(test_image_path):
-        print(f"Processing image: {test_image_path}")
-        data = extract_data(test_image_path)
-        print("\n--- Extracted Data (Coordinate-based) ---")
-        if data:
-            for item in data:
+        # print(f"\n--- Processing with Tesseract ({test_image_path}) ---") # Removed Tesseract Call
+        # data_tesseract = extract_data(test_image_path)
+        # print("\n--- Extracted Data (Tesseract - Line-based - Final) ---")
+        # if data_tesseract:
+        #     for item in data_tesseract:
+        #         print(item)
+        # else:
+        #     print("No data extracted.")
+            
+        print(f"\n--- Processing with EasyOCR ({test_image_path}) ---")
+        data_easyocr = extract_data_easyocr(test_image_path)
+        print("\n--- Extracted Data (EasyOCR - Final) ---") # Updated title
+        if data_easyocr:
+            for item in data_easyocr:
                 print(item)
         else:
-            print("No data extracted.")
+            print("No data extracted.") # Updated message
+            
     else:
         print(f"Test image not found: {test_image_path}")
-        print("Skipping direct execution example.") 
+        print("Skipping direct execution example.")

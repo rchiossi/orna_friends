@@ -6,7 +6,7 @@ import ocr_processor
 import os
 import traceback # Import traceback for detailed error logging
 import datetime
-import pytesseract # Add this import
+# import pytesseract # Removed - No longer used
 import io # To handle image blob data
 import tksheet # Import tksheet
 
@@ -34,6 +34,10 @@ class AppGUI:
         self.bulk_results_map = {} # Map filepath -> extracted data list
         self.bulk_listbox_map = {} # Map listbox index -> filepath
         self.bulk_selected_filepath = None # Currently selected file in bulk list
+
+        # Sorting state for the main data treeview
+        self.tree_sort_column = 'Extraction Date' # Default sort column
+        self.tree_sort_direction = 'desc' # Default sort direction
 
         # --- Create Tabs --- 
         self.notebook = ttk.Notebook(master)
@@ -329,8 +333,8 @@ class AppGUI:
         self.last_extracted_data = [] # Clear previous results
         try:
             print(f"Processing image ID: {self.current_image_id}, Path: {self.current_image_path}")
-            # Run OCR
-            self.last_extracted_data = ocr_processor.extract_data(self.current_image_path)
+            # Run OCR - UPDATED FUNCTION NAME
+            self.last_extracted_data = ocr_processor.extract_data_easyocr(self.current_image_path)
             print(f"Extracted {len(self.last_extracted_data)} potential entries.")
             
             self.display_data_on_sheet(self.last_extracted_data)
@@ -811,7 +815,7 @@ class AppGUI:
         self.bulk_process_all_button.config(state=tk.DISABLED)
         
         try:
-            extracted_data = ocr_processor.extract_data(filepath)
+            extracted_data = ocr_processor.extract_data_easyocr(filepath)
             self.bulk_results_map[filepath] = extracted_data # Store/update results
             self.display_data_on_sheet(extracted_data, sheet_widget=self.bulk_data_sheet)
             self.status_label.config(text=f"Processed {os.path.basename(filepath)}. Edit sheet and save if needed.")
@@ -852,7 +856,7 @@ class AppGUI:
             self.status_label.config(text=f"Processing {i+1}/{len(self.bulk_image_files)}: {filename}...")
             self.master.update_idletasks()
             try:
-                extracted_data = ocr_processor.extract_data(filepath)
+                extracted_data = ocr_processor.extract_data_easyocr(filepath)
                 self.bulk_results_map[filepath] = extracted_data
                 processed_count += 1
                 print(f" -> Processed {filename}: Found {len(extracted_data)} entries.")
