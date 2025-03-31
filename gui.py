@@ -452,7 +452,7 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
 
     def trigger_ocr_processing(self):
         """Called by Process button. Runs OCR and populates the data sheet."""
-        if not self.current_image_path or self.current_image_id is None:
+        if not self.current_image_path:
             messagebox.showwarning("Warning", "Please select an image first.")
             return
         
