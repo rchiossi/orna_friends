@@ -40,6 +40,11 @@ class AppGUI:
         # Sorting state for the main data treeview
         self.tree_sort_column = 'Extraction Date' # Default sort column
         self.tree_sort_direction = 'desc' # Default sort direction
+        self.tree_sort_reverse = True # Corresponding boolean flag
+
+        # Store current PIL images for resize handlers
+        self.manage_tab_pil_image = None
+        self.bulk_tab_pil_image = None
 
         # --- Create Tabs --- 
         self.notebook = ttk.Notebook(master)
@@ -70,6 +75,7 @@ class AppGUI:
         self.image_canvas = tk.Canvas(self.left_panel, bg='lightgrey', width=300, height=400)
         self.image_canvas.grid(row=1, column=0, pady=10, sticky=(tk.W, tk.E, tk.N, tk.S))
         self.left_panel.rowconfigure(1, weight=1) # Allow canvas to expand
+        self.image_canvas.bind("<Configure>", self._on_proc_canvas_configure)
 
         self.process_button = ttk.Button(self.left_panel, text="Process Image", command=self.trigger_ocr_processing, state=tk.DISABLED)
         self.process_button.grid(row=2, column=0, pady=5, sticky=tk.W)
@@ -134,6 +140,7 @@ class AppGUI:
         self.bulk_image_panel.grid(row=1, column=1, sticky=(tk.N, tk.S, tk.W, tk.E), padx=5, pady=5)
         self.bulk_image_canvas = tk.Canvas(self.bulk_image_panel, bg='lightgrey', width=300, height=400)
         self.bulk_image_canvas.pack(expand=True, fill='both') 
+        self.bulk_image_canvas.bind("<Configure>", self._on_bulk_canvas_configure)
 
         # --- Sheet Panel (in Tab 4) ---
         self.bulk_sheet_panel = ttk.Frame(self.bulk_tab, padding="10")
@@ -190,6 +197,7 @@ class AppGUI:
         self.manage_image_panel.grid(row=0, column=1, sticky=(tk.N, tk.S, tk.W, tk.E), padx=5, pady=5)
         self.manage_image_canvas = tk.Canvas(self.manage_image_panel, bg='lightgrey', width=300, height=400)
         self.manage_image_canvas.pack(expand=True, fill='both') # Use pack here for simplicity
+        self.manage_image_canvas.bind("<Configure>", self._on_manage_canvas_configure)
 
         # --- Sheet Panel (in Tab 3) ---
         self.manage_sheet_panel = ttk.Frame(self.manage_tab, padding="10")
@@ -287,6 +295,52 @@ class AppGUI:
 
     # --- Methods --- 
 
+    def _get_or_create_image_id(self, file_path):
+        """Gets existing image ID by path, or adds image to DB if not found."""
+        if not file_path or not os.path.exists(file_path):
+            raise ValueError(f"Invalid or missing image file path: {file_path}")
+
+        image_id = database.get_image_id_by_path(file_path)
+        if image_id is None:
+            print(f"Image path {file_path} not found in DB, adding...")
+            with open(file_path, 'rb') as f:
+                image_blob = f.read()
+            image_id = database.add_image(file_path, image_blob)
+            if image_id is None:
+                raise ValueError(f"Failed to add image to database: {file_path}")
+            print(f"Added image, new ID: {image_id}")
+        else:
+            print(f"Found existing image ID {image_id} for path {file_path}")
+        return image_id
+
+    def _display_image_on_canvas(self, canvas, pil_image):
+        """Helper to resize and display a PIL image on a canvas, storing the Tk image."""
+        if not pil_image:
+            canvas.delete("all")
+            canvas.tk_image = None # Clear stored image reference on canvas
+            return
+
+        canvas_width = canvas.winfo_width()
+        canvas_height = canvas.winfo_height()
+
+        if canvas_width <= 1 or canvas_height <= 1: # Avoid division by zero or tiny canvas
+            # If canvas size is not determined yet, don't try to draw
+            return 
+
+        # Resize image proportionally
+        img_copy = pil_image.copy()
+        # Use ANTIALIAS or LANCZOS for better quality
+        img_copy.thumbnail((canvas_width, canvas_height), Image.Resampling.LANCZOS) 
+
+        # Create and store PhotoImage
+        photo_image = ImageTk.PhotoImage(img_copy)
+        # Store reference directly on the canvas widget to prevent garbage collection
+        canvas.tk_image = photo_image 
+
+        # Display image on canvas, centered
+        canvas.delete("all")
+        canvas.create_image(canvas_width / 2, canvas_height / 2, anchor=tk.CENTER, image=photo_image)
+
     def quit_app(self, event=None):
         """Closes the application window."""
         print("Escape pressed, exiting.")
@@ -366,12 +420,14 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
 
         try:
             self.current_pil_image = Image.open(file_path)
+            # --- Removed DB insertion --- 
             # Add image to DB right away to get an ID
-            with open(file_path, 'rb') as f:
-                image_blob = f.read()
-            self.current_image_id = database.add_image(file_path, image_blob)
-            if self.current_image_id is None:
-                raise ValueError("Failed to get image ID from database.")
+            # with open(file_path, 'rb') as f:
+            #     image_blob = f.read()
+            # self.current_image_id = database.add_image(file_path, image_blob)
+            # if self.current_image_id is None:
+            #     raise ValueError("Failed to get image ID from database.")
+            self.current_image_id = None # Image ID is unknown until saved
 
             self.display_image(self.current_pil_image)
             self.process_button.config(state=tk.NORMAL) # Enable process button
@@ -443,9 +499,11 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
         
     def save_proc_tab_data(self):
         """Saves ALL data currently in the sheet on the PROCESSING TAB."""
-        if self.current_image_id is None:
+        # Image ID might be None if it's newly loaded/captured
+        if self.current_image_path is None:
             messagebox.showwarning("Warning", "No image context in processing tab.")
             return
+            
         sheet_data = self.data_sheet.get_sheet_data()
         valid_rows_to_save, errors = self.validate_sheet_data(sheet_data)
         if errors:
@@ -456,10 +514,15 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
              return
         # Proceed with saving
         try:
-            database.clear_extracted_data_for_image(self.current_image_id)
+            # Get or create Image ID before saving data
+            image_id = self._get_or_create_image_id(self.current_image_path)
+            # Update the current ID in case it was just created
+            self.current_image_id = image_id 
+            
+            database.clear_extracted_data_for_image(image_id)
             saved_count = 0
             for username, level, class_name in valid_rows_to_save:
-                 database.add_extracted_data(self.current_image_id, username, level, class_name)
+                 database.add_extracted_data(image_id, username, level, class_name)
                  saved_count += 1
             messagebox.showinfo("Success", f"{saved_count} data entries saved.")
             self.load_data_into_treeview() # Refresh all data tab
@@ -471,7 +534,7 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
 
     def save_manage_tab_data(self):
         """Saves ALL data currently in the sheet on the MANAGE TAB."""
-        if self.manage_tab_image_id is None:
+        if self.manage_tab_image_id is None or self.manage_tab_file_path is None:
              messagebox.showwarning("Warning", "No image selected in the Manage Data tab.")
              return
         sheet_data = self.manage_data_sheet.get_sheet_data()
@@ -484,10 +547,14 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
              return
         # Proceed with saving
         try:
-            database.clear_extracted_data_for_image(self.manage_tab_image_id)
+            # Get or create Image ID (should usually exist here, but check anyway)
+            image_id = self._get_or_create_image_id(self.manage_tab_file_path)
+            self.manage_tab_image_id = image_id # Ensure context ID is up-to-date
+            
+            database.clear_extracted_data_for_image(image_id)
             saved_count = 0
             for username, level, class_name in valid_rows_to_save:
-                 database.add_extracted_data(self.manage_tab_image_id, username, level, class_name)
+                 database.add_extracted_data(image_id, username, level, class_name)
                  saved_count += 1
             messagebox.showinfo("Success", f"{saved_count} data entries saved.")
             self.load_data_into_treeview() # Refresh all data tab
@@ -675,19 +742,17 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
              
     def display_image(self, pil_image):
         """Displays the given PIL image on the PROC TAB canvas."""
-        display_img = pil_image.copy()
-        display_img.thumbnail((300, 400)) 
-        self.proc_tk_image = ImageTk.PhotoImage(display_img) # Use different var name
-        self.image_canvas.delete("all") 
-        self.image_canvas.config(width=self.proc_tk_image.width(), height=self.proc_tk_image.height())
-        self.image_canvas.create_image(0, 0, anchor=tk.NW, image=self.proc_tk_image)
+        # Store the current PIL image for the processing tab
+        self.current_pil_image = pil_image 
+        # Use the helper to display
+        self._display_image_on_canvas(self.image_canvas, self.current_pil_image)
         
     def reset_image_panel(self):
          """Clears the image canvas, PROC TAB sheet and related variables."""
          self.image_canvas.delete("all")
          self.clear_sheet(sheet_widget=self.data_sheet) # Use proc tab sheet
          self.current_image_path = None
-         self.current_pil_image = None
+         self.current_pil_image = None # Clear stored PIL image
          self.current_image_id = None
          self.last_extracted_data = []
          self.process_button.config(state=tk.DISABLED)
@@ -734,12 +799,8 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
             if image_blob:
                 pil_image = Image.open(io.BytesIO(image_blob))
                 # Display on manage tab canvas
-                display_img = pil_image.copy()
-                display_img.thumbnail((300, 400)) 
-                self.manage_tk_image = ImageTk.PhotoImage(display_img) # Store separately
-                self.manage_image_canvas.delete("all") 
-                self.manage_image_canvas.config(width=self.manage_tk_image.width(), height=self.manage_tk_image.height())
-                self.manage_image_canvas.create_image(0, 0, anchor=tk.NW, image=self.manage_tk_image)
+                self.manage_tab_pil_image = pil_image
+                self._display_image_on_canvas(self.manage_image_canvas, self.manage_tab_pil_image)
                 
                 # Load saved data into manage tab sheet
                 saved_data = database.get_extracted_data_by_image_id(image_id)
@@ -775,6 +836,7 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
 
     def reset_manage_panel(self):
         """Clears the controls on the manage tab."""
+        self.manage_tab_pil_image = None # Clear stored PIL image
         self.manage_image_canvas.delete("all")
         self.clear_sheet(sheet_widget=self.manage_data_sheet)
         self.manage_tab_image_id = None
@@ -840,7 +902,11 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
             # Display existing results if already processed
             if filepath in self.bulk_results_map:
                 self.display_data_on_sheet(self.bulk_results_map[filepath], sheet_widget=self.bulk_data_sheet)
-                self.bulk_save_selected_button.config(state=tk.NORMAL)
+                # Check if the map entry has valid data before enabling save
+                if self.bulk_results_map[filepath]: 
+                    self.bulk_save_selected_button.config(state=tk.NORMAL)
+                else:
+                    self.bulk_save_selected_button.config(state=tk.DISABLED)
             else:
                 self.clear_sheet(sheet_widget=self.bulk_data_sheet)
                 self.bulk_save_selected_button.config(state=tk.DISABLED)
@@ -848,23 +914,25 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
         else:
              print(f"Error: Selected bulk listbox index {selected_index} not in map.")
              self.bulk_selected_filepath = None
-             # Clear display?
+             self.bulk_tab_pil_image = None # Clear PIL image if selection invalid
+             self._display_image_on_canvas(self.bulk_image_canvas, None)
+             self.clear_sheet(sheet_widget=self.bulk_data_sheet)
+             self.bulk_save_selected_button.config(state=tk.DISABLED)
+             self.bulk_process_selected_button.config(state=tk.DISABLED)
              
     def display_bulk_tab_image(self, filepath):
         """Displays the image from the filepath in the bulk tab canvas."""
         try:
-            pil_image = Image.open(filepath)
-            display_img = pil_image.copy()
-            display_img.thumbnail((300, 400)) 
-            self.bulk_tk_image = ImageTk.PhotoImage(display_img) 
-            self.bulk_image_canvas.delete("all") 
-            self.bulk_image_canvas.config(width=self.bulk_tk_image.width(), height=self.bulk_tk_image.height())
-            self.bulk_image_canvas.create_image(0, 0, anchor=tk.NW, image=self.bulk_tk_image)
+            # Load and store the PIL image for the bulk tab
+            self.bulk_tab_pil_image = Image.open(filepath)
+            # Call the helper to display it
+            self._display_image_on_canvas(self.bulk_image_canvas, self.bulk_tab_pil_image)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to display image: {os.path.basename(filepath)}\n{e}")
             self.bulk_image_canvas.delete("all")
-            traceback.print_exc()
-            
+            self.bulk_tab_pil_image = None # Clear on error
+            traceback.print_exc() 
+             
     def process_selected_bulk(self):
         """Processes the single image currently selected in the bulk list."""
         if not self.bulk_selected_filepath:
@@ -951,131 +1019,158 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
             self.bulk_save_selected_button.config(state=tk.DISABLED)
             
     def save_selected_bulk(self):
-        """Saves the data for the currently selected image from the bulk sheet."""
-        if not self.bulk_selected_filepath:
-            messagebox.showwarning("Warning", "No image selected in the list.")
+        """Saves data for selected rows in the bulk processing treeview."""
+        selected_items = self.bulk_tree.selection()
+        if not selected_items:
+            messagebox.showwarning("Warning", "No items selected.")
             return
+
+        processed_count = 0
+        error_count = 0
+        saved_count = 0
+        
+        for item_id in selected_items:
+            values = self.bulk_tree.item(item_id, 'values')
+            tags = self.bulk_tree.item(item_id, 'tags')
             
-        filepath = self.bulk_selected_filepath
-        sheet_data = self.bulk_data_sheet.get_sheet_data()
-        if not sheet_data:
-             messagebox.showinfo("Save", "Sheet is empty, nothing to save for selected image.")
-             return
-             
-        valid_rows_to_save, errors = self.validate_sheet_data(sheet_data)
-        if errors:
-            messagebox.showwarning("Validation Error", "Errors found:\n" + "\n".join(errors)) 
-            return
-        if not valid_rows_to_save:
-             messagebox.showinfo("Save", "No valid data rows found in the sheet to save.")
-             return
-             
-        # Get image ID (add image to DB if not already there)
-        try:
-            with open(filepath, 'rb') as f: image_blob = f.read()
-            image_id = database.add_image(filepath, image_blob)
-            if image_id is None:
-                 raise ValueError("Failed to get or add image ID to database.")
-                 
-            # Proceed with saving
-            database.clear_extracted_data_for_image(image_id)
-            saved_count = 0
-            for username, level, class_name in valid_rows_to_save:
-                 database.add_extracted_data(image_id, username, level, class_name)
-                 saved_count += 1
-            messagebox.showinfo("Success", f"{saved_count} entries saved for {os.path.basename(filepath)}.")
-            # Update internal map too, in case user processed again without saving
-            self.bulk_results_map[filepath] = [{'username': r[0], 'level': r[1], 'class': r[2]} for r in valid_rows_to_save]
-            # Refresh other views
-            self.load_data_into_treeview()
-            self.populate_image_listbox() # Refresh manage list
-        except Exception as e:
-             messagebox.showerror("Database Error", f"Failed to save data for {os.path.basename(filepath)}: {e}")
-             traceback.print_exc()
+            # Check if already processed or has errors
+            if 'processed' in tags or 'error' in tags:
+                 print(f"Skipping already processed/error item: {item_id}")
+                 continue
+
+            filepath = values[0]
+            sheet_data = eval(values[1]) # Safely evaluate the string representation of the list
+
+            if not isinstance(sheet_data, list):
+                 messagebox.showerror("Error", f"Invalid data format for item {item_id}")
+                 error_count += 1
+                 self.bulk_tree.item(item_id, tags=('error',))
+                 continue
+
+            valid_rows_to_save, errors = self.validate_sheet_data(sheet_data)
+
+            if errors:
+                messagebox.showerror("Validation Error", f"Errors in data for {os.path.basename(filepath)}:\\n{chr(10).join(errors)}")
+                error_count += 1
+                self.bulk_tree.item(item_id, tags=('error',))
+                continue
+
+            # Get image ID (add image to DB if not already there)
+            try:
+                # Get or create Image ID 
+                image_id = self._get_or_create_image_id(filepath)
+                # ~~ with open(filepath, 'rb') as f: image_blob = f.read() ~~
+                # ~~ image_id = database.add_image(filepath, image_blob) ~~
+                # ~~ if image_id is None: ~~
+                # ~~      raise ValueError("Failed to get or add image ID to database.") ~~
+                     
+                # Proceed with saving
+                database.clear_extracted_data_for_image(image_id)
+                current_item_saved_count = 0
+                for username, level, class_name in valid_rows_to_save:
+                    database.add_extracted_data(image_id, username, level, class_name) # Use image_id here
+                    current_item_saved_count += 1
+                
+                self.bulk_tree.item(item_id, tags=('processed',))
+                saved_count += current_item_saved_count
+                processed_count += 1
+                print(f"Successfully saved {current_item_saved_count} entries for image ID {image_id} ({os.path.basename(filepath)})")
+
+
+            except Exception as e:
+                messagebox.showerror("Error", f"Error saving data for {os.path.basename(filepath)}: {e}")
+                self.bulk_tree.item(item_id, tags=('error',))
+                error_count += 1
+                print(f"Error saving data for {filepath}: {e}")
+
+
+        messagebox.showinfo("Bulk Save Complete", f"Processed: {processed_count}\\nSaved Entries: {saved_count}\\nErrors: {error_count}")
+        self.load_bulk_data() # Refresh view
 
     def save_all_bulk(self):
-        """Saves all processed data stored in self.bulk_results_map to the DB."""
-        if not self.bulk_results_map:
-            messagebox.showinfo("Save All", "No processed data available to save.")
+        """Attempts to save data for ALL non-processed/non-error rows."""
+        all_items = self.bulk_tree.get_children('')
+        if not all_items:
+            messagebox.showwarning("Warning", "No items to process.")
             return
-            
-        total_saved_count = 0
-        errors_occurred = False
-        num_images = len(self.bulk_results_map)
-        current_image_num = 0
-        
-        if not messagebox.askyesno("Confirm Save All", f"This will save processed data for {num_images} images.\nExisting saved data for these images will be replaced.\nContinue?"):
-            return
-            
-        self.status_label.config(text=f"Saving data for 0/{num_images} images...")
-        self.master.update_idletasks()
-        # Disable buttons
-        self.bulk_process_selected_button.config(state=tk.DISABLED)
-        self.bulk_process_all_button.config(state=tk.DISABLED)
-        self.bulk_save_selected_button.config(state=tk.DISABLED)
-        self.bulk_save_all_button.config(state=tk.DISABLED)
 
-        for filepath, data_list in self.bulk_results_map.items():
-            current_image_num += 1
-            filename = os.path.basename(filepath)
-            self.status_label.config(text=f"Saving data for {current_image_num}/{num_images}: {filename}...")
-            self.master.update_idletasks()
+        processed_count = 0
+        error_count = 0
+        saved_count = 0
+
+        for item_id in all_items:
+            values = self.bulk_tree.item(item_id, 'values')
+            tags = self.bulk_tree.item(item_id, 'tags')
             
-            # Data is already extracted, format it for validation/saving
-            # (Assuming data_list contains dicts like {'username': '...', ...})
-            rows_to_validate = []
-            for entry in data_list:
-                 rows_to_validate.append([
-                     entry.get('username', ''), 
-                     entry.get('level', ''), # Level might be None or int
-                     entry.get('class', '')
-                 ])
-                 
-            valid_rows_to_save, errors = self.validate_sheet_data(rows_to_validate)
-            
+            # Skip already processed or errored items
+            if 'processed' in tags or 'error' in tags:
+                print(f"Skipping already processed/error item: {item_id}")
+                continue
+
+            filepath = values[0]
+            sheet_data_str = values[1]
+
+            try:
+                sheet_data = eval(sheet_data_str) # Safely evaluate the string
+                if not isinstance(sheet_data, list):
+                    raise TypeError("Evaluated data is not a list.")
+            except Exception as e:
+                messagebox.showerror("Data Error", f"Invalid data format for {os.path.basename(filepath)}: {e}")
+                self.bulk_tree.item(item_id, tags=('error',))
+                error_count += 1
+                print(f"Error evaluating data for {filepath}: {e}")
+                continue
+
+
+            valid_rows_to_save, errors = self.validate_sheet_data(sheet_data)
+
             if errors:
-                print(f" -> Validation errors saving {filename}: {errors}")
-                errors_occurred = True
-                continue # Skip saving this file
-            if not valid_rows_to_save:
-                print(f" -> No valid rows to save for {filename}.")
-                continue # Skip saving this file
-                
+                messagebox.showerror("Validation Error", f"Errors in data for {os.path.basename(filepath)}:\\n{chr(10).join(errors)}")
+                self.bulk_tree.item(item_id, tags=('error',))
+                error_count += 1
+                continue
+
             # Get image ID
             try:
-                with open(filepath, 'rb') as f: image_blob = f.read()
-                image_id = database.add_image(filepath, image_blob)
-                if image_id is None: raise ValueError("Failed to get image ID")
+                # Get or create Image ID
+                image_id = self._get_or_create_image_id(filepath)
+                # ~~ with open(filepath, 'rb') as f: image_blob = f.read() ~~
+                # ~~ image_id = database.add_image(filepath, image_blob) ~~
+                # ~~ if image_id is None: raise ValueError("Failed to get image ID") ~~
                 
                 database.clear_extracted_data_for_image(image_id)
-                file_saved_count = 0
+                current_item_saved_count = 0
                 for username, level, class_name in valid_rows_to_save:
-                     database.add_extracted_data(image_id, username, level, class_name)
-                     file_saved_count += 1
-                print(f" -> Saved {file_saved_count} entries for {filename}.")
-                total_saved_count += file_saved_count
-                
-            except Exception as e:
-                print(f" -> ERROR saving data for {filename}: {e}")
-                errors_occurred = True
-                # traceback.print_exc() # Optionally print full trace
+                    database.add_extracted_data(image_id, username, level, class_name) # Use image_id here
+                    current_item_saved_count += 1
 
-        # Update status and re-enable buttons
-        final_status = f"Bulk save complete. {total_saved_count} total entries saved."
-        if errors_occurred:
-             final_status += " Some errors occurred (see console)."
-        self.status_label.config(text=final_status)
-        messagebox.showinfo("Save All Complete", final_status)
-        
-        self.bulk_process_selected_button.config(state=tk.NORMAL)
-        self.bulk_process_all_button.config(state=tk.NORMAL)
-        # Re-enable save selected only if current selection exists and was potentially saved
-        if self.bulk_selected_filepath in self.bulk_results_map:
-             self.bulk_save_selected_button.config(state=tk.NORMAL)
-        else:
-             self.bulk_save_selected_button.config(state=tk.DISABLED)
-        self.bulk_save_all_button.config(state=tk.NORMAL if self.bulk_results_map else tk.DISABLED)
-        
-        # Refresh other views
-        self.load_data_into_treeview()
-        self.populate_image_listbox()
+                self.bulk_tree.item(item_id, tags=('processed',))
+                saved_count += current_item_saved_count
+                processed_count += 1
+                print(f"Successfully saved {current_item_saved_count} entries for image ID {image_id} ({os.path.basename(filepath)})")
+
+
+            except Exception as e:
+                messagebox.showerror("Error", f"Error saving data for {os.path.basename(filepath)}: {e}")
+                self.bulk_tree.item(item_id, tags=('error',))
+                error_count += 1
+                print(f"Error saving data for {filepath}: {e}")
+
+
+        messagebox.showinfo("Bulk Save Complete", f"Processed: {processed_count}\\nSaved Entries: {saved_count}\\nErrors: {error_count}")
+        self.load_bulk_data() # Refresh view
+
+    def _on_proc_canvas_configure(self, event):
+        """Handles canvas configure event for the processing tab image canvas."""
+        # Call the display helper with the currently loaded PIL image for this tab
+        self._display_image_on_canvas(self.image_canvas, self.current_pil_image)
+
+    def _on_bulk_canvas_configure(self, event):
+        """Handles canvas configure event for the bulk tab image canvas."""
+        # Call the display helper with the currently loaded PIL image for this tab
+        self._display_image_on_canvas(self.bulk_image_canvas, self.bulk_tab_pil_image)
+
+    def _on_manage_canvas_configure(self, event):
+        """Handles canvas configure event for the manage tab image canvas."""
+        # Call the display helper with the currently loaded PIL image for this tab
+        self._display_image_on_canvas(self.manage_image_canvas, self.manage_tab_pil_image)
