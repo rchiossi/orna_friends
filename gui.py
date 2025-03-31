@@ -6,7 +6,6 @@ import ocr_processor
 import os
 import traceback # Import traceback for detailed error logging
 import datetime
-# import pytesseract # Removed - No longer used
 import io # To handle image blob data
 import tksheet # Import tksheet
 import adbutils # Added for ADB
@@ -480,9 +479,6 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
                  self.status_label.config(text="OCR complete. No data found.")
                  messagebox.showinfo("OCR Result", "No data automatically extracted.")
 
-        except pytesseract.TesseractNotFoundError:
-            messagebox.showerror("Error", "Tesseract OCR engine not found...") # Full message omitted for brevity
-            self.status_label.config(text="OCR Error: Tesseract not found")
         except ImportError as e:
              messagebox.showerror("Error", f"Missing library: {e}...")
              self.status_label.config(text=f"Import Error: {e}")

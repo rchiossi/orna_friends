@@ -137,3 +137,6 @@ images/
 
 # Database
 orna_data.db
+
+# Processed Images
+processed_images/
