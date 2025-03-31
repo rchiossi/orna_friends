@@ -11,6 +11,7 @@ import io # To handle image blob data
 import tksheet # Import tksheet
 import adbutils # Added for ADB
 from adbutils import adb # For specific adb functions
+import csv # Import the csv module
 
 class AppGUI:
     def __init__(self, master):
@@ -250,7 +251,15 @@ class AppGUI:
             variable=self.filter_duplicates_var, 
             command=self.load_data_into_treeview # Refresh tree when toggled
         )
-        self.filter_checkbox.pack(side=tk.LEFT)
+        self.filter_checkbox.pack(side=tk.LEFT, padx=(0, 10))
+
+        # Export Button
+        self.export_button = ttk.Button(
+            self.all_data_top_frame, 
+            text="Export to CSV...", 
+            command=self.export_data_to_csv
+        )
+        self.export_button.pack(side=tk.LEFT)
 
         # Treeview setup (as before)
         columns = ('username', 'level', 'class', 'extracted_at')
@@ -280,15 +289,15 @@ class AppGUI:
         # Bind selection event (as before)
         self.data_tree.bind("<<TreeviewSelect>>", self.on_tree_select)
 
+        # Store data currently displayed in the Treeview for sorting/export
+        self.displayed_tree_data = []
+        # Initialize sorting state (though defaults are set earlier, good practice to ensure they exist before first use)
+        # self.tree_sort_column = None # Keep the default set earlier
+        # self.tree_sort_reverse = False # Keep the default set earlier
+
         # Load initial data (after ALL tabs are created)
         self.load_data_into_treeview() # For All Data Tab
         self.populate_image_listbox() # For Manage Data Tab
-
-        # Store data currently displayed in the Treeview for sorting
-        self.displayed_tree_data = []
-        # Store sorting state
-        self.tree_sort_column = None
-        self.tree_sort_reverse = False
 
         # Bind Escape key to exit
         master.bind('<Escape>', self.quit_app)
@@ -1174,3 +1183,56 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
         """Handles canvas configure event for the manage tab image canvas."""
         # Call the display helper with the currently loaded PIL image for this tab
         self._display_image_on_canvas(self.manage_image_canvas, self.manage_tab_pil_image)
+
+    def export_data_to_csv(self):
+        """Exports the current data in the treeview (respecting filter) to a CSV file."""
+        if not self.displayed_tree_data:
+            messagebox.showinfo("Info", "No data currently displayed to export.")
+            return
+
+        try:
+            # Prompt the user for a filename
+            default_filename = f"orna_friends_export_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".csv", 
+                filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")],
+                initialfile=default_filename,
+                title="Save Exported Data As"
+            )
+            if not filename:
+                print("CSV export cancelled.")
+                return # User cancelled
+
+            # Define CSV header
+            header = ["Username", "Level", "Class", "Extraction Date", "Image File Path"]
+
+            # Prepare data for CSV export (select and format needed columns)
+            csv_data = []
+            for row in self.displayed_tree_data:
+                # Extract data based on the structure in load_data_into_treeview
+                # (db_id, image_id, file_path, username, level, class_name, timestamp_str)
+                file_path = row[2] if row[2] else "N/A"
+                username = row[3]
+                level = row[4] if row[4] is not None else ""
+                class_name = row[5] if row[5] else ""
+                timestamp_str = row[6]
+                
+                # Re-format date for consistency (optional, but good practice)
+                try:
+                    dt_obj = datetime.datetime.fromisoformat(timestamp_str)
+                    formatted_date = dt_obj.strftime("%Y-%m-%d %H:%M:%S")
+                except: 
+                    formatted_date = timestamp_str # Fallback to original string
+                
+                csv_data.append([username, level, class_name, formatted_date, file_path])
+
+            # Write data to CSV file
+            with open(filename, 'w', newline='', encoding='utf-8') as csvfile: # Specify encoding
+                csvwriter = csv.writer(csvfile)
+                csvwriter.writerow(header) # Write the header
+                csvwriter.writerows(csv_data) # Write the data rows
+
+            messagebox.showinfo("Success", f"Data successfully exported to:\n{filename}")
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export data to CSV: {e}")
+            traceback.print_exc()
