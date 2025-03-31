@@ -3,4 +3,5 @@ Pillow
 opencv-python
 pandas
 tksheet
-easyocr 
+easyocr
+adbutils # Added for Android device interaction 

@@ -9,6 +9,8 @@ import datetime
 # import pytesseract # Removed - No longer used
 import io # To handle image blob data
 import tksheet # Import tksheet
+import adbutils # Added for ADB
+from adbutils import adb # For specific adb functions
 
 class AppGUI:
     def __init__(self, master):
@@ -55,8 +57,15 @@ class AppGUI:
         self.left_panel = ttk.Frame(self.processing_tab, padding="10")
         self.left_panel.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=5, pady=5)
 
-        self.select_button = ttk.Button(self.left_panel, text="Select Image", command=self.select_image)
-        self.select_button.grid(row=0, column=0, pady=5, sticky=tk.W)
+        # Create a frame for the top buttons
+        self.button_frame = ttk.Frame(self.left_panel)
+        self.button_frame.grid(row=0, column=0, pady=5, sticky=tk.W)
+
+        self.select_button = ttk.Button(self.button_frame, text="Select Image", command=self.select_image)
+        self.select_button.pack(side=tk.LEFT, padx=(0, 5))
+
+        self.capture_button = ttk.Button(self.button_frame, text="Capture from Device", command=self.capture_screenshot_from_device)
+        self.capture_button.pack(side=tk.LEFT)
 
         self.image_canvas = tk.Canvas(self.left_panel, bg='lightgrey', width=300, height=400)
         self.image_canvas.grid(row=1, column=0, pady=10, sticky=(tk.W, tk.E, tk.N, tk.S))
@@ -293,7 +302,63 @@ class AppGUI:
         )
         if not file_path:
             return
+        # Use the helper to process the selected file
+        self._process_loaded_image(file_path)
 
+    def capture_screenshot_from_device(self):
+        """Captures screenshot from connected Android device via ADB."""
+        self.status_label.config(text="Connecting to device...")
+        self.master.update_idletasks()
+        
+        try:
+            # Ensure the target directory exists
+            images_dir = "images"
+            os.makedirs(images_dir, exist_ok=True)
+            
+            # Connect to the first device found
+            print("Attempting to connect via ADB...")
+            device = adb.device()
+            serial = device.serial
+            print(f"Connected to device: {serial}")
+            self.status_label.config(text=f"Connected to {serial}. Capturing...")
+            self.master.update_idletasks()
+            
+            # Capture screenshot
+            screenshot = device.shell(["screencap", "-p"], encoding=None) # Get raw bytes
+            
+            if not screenshot:
+                raise Exception("Failed to capture screenshot (empty result).")
+            
+            # Save the screenshot
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"screenshot_adb_{timestamp}.png"
+            save_path = os.path.join(images_dir, filename)
+            
+            print(f"Saving screenshot to: {save_path}")
+            with open(save_path, 'wb') as f:
+                f.write(screenshot)
+            print("Screenshot saved.")
+            
+            # Process the saved screenshot file
+            self._process_loaded_image(save_path)
+            
+        except adbutils.errors.AdbError as e:
+            messagebox.showerror("ADB Error", f"ADB command failed: {e}\
+Is ADB installed and in PATH? Is a device connected and authorized?")
+            self.status_label.config(text="ADB Error. Check connection/setup.")
+            traceback.print_exc()
+        except FileNotFoundError:
+            # Specific error if adb command itself is not found
+            messagebox.showerror("ADB Error", "'adb' command not found. Please install Android SDK Platform Tools and ensure adb is in your system PATH.")
+            self.status_label.config(text="ADB command not found.")
+            traceback.print_exc()
+        except Exception as e:
+            messagebox.showerror("Capture Error", f"Failed to capture screenshot: {e}")
+            self.status_label.config(text="Screenshot capture failed.")
+            traceback.print_exc()
+
+    def _process_loaded_image(self, file_path):
+        """Helper method to load, display, and prep an image file for processing."""
         self.current_image_path = file_path
         self.status_label.config(text=f"Loaded: {os.path.basename(file_path)}")
         self.clear_sheet() # Clear sheet data
