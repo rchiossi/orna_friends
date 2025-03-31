@@ -309,18 +309,21 @@ class AppGUI:
         if not file_path or not os.path.exists(file_path):
             raise ValueError(f"Invalid or missing image file path: {file_path}")
 
-        image_id = database.get_image_id_by_path(file_path)
-        if image_id is None:
-            print(f"Image path {file_path} not found in DB, adding...")
+        print(f"Getting or adding image for path: {file_path}")
+        try:
             with open(file_path, 'rb') as f:
                 image_blob = f.read()
             image_id = database.add_image(file_path, image_blob)
             if image_id is None:
-                raise ValueError(f"Failed to add image to database: {file_path}")
-            print(f"Added image, new ID: {image_id}")
-        else:
-            print(f"Found existing image ID {image_id} for path {file_path}")
-        return image_id
+                raise ValueError(f"database.add_image failed to return an ID for: {file_path}")
+            print(f"Obtained image ID: {image_id}")
+            return image_id
+        except FileNotFoundError:
+             raise ValueError(f"Image file not found during ID retrieval: {file_path}")
+        except Exception as e:
+             # Re-raise other exceptions to be caught by the calling function (save_proc_tab_data)
+             print(f"Error in _get_or_create_image_id for {file_path}: {e}")
+             raise e 
 
     def _display_image_on_canvas(self, canvas, pil_image):
         """Helper to resize and display a PIL image on a canvas, storing the Tk image."""
