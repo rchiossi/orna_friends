@@ -26,6 +26,7 @@ def init_db():
             username TEXT NOT NULL,
             level INTEGER,
             class TEXT,
+            friend INTEGER DEFAULT 0,
             extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (image_id) REFERENCES images (id)
         )
@@ -55,13 +56,15 @@ def add_image(file_path, image_data):
         conn.close()
     return image_id
 
-def add_extracted_data(image_id, username, level, class_name):
+def add_extracted_data(image_id, username, level, class_name, friend=False):
     """Adds extracted data linked to an image ID."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     try:
-        cursor.execute("INSERT INTO extracted_data (image_id, username, level, class) VALUES (?, ?, ?, ?)",
-                       (image_id, username, level, class_name))
+        # Convert boolean friend to integer (0 or 1) for DB
+        friend_int = 1 if friend else 0 
+        cursor.execute("INSERT INTO extracted_data (image_id, username, level, class, friend) VALUES (?, ?, ?, ?, ?)",
+                       (image_id, username, level, class_name, friend_int))
         conn.commit()
     except Exception as e:
         print(f"Error adding extracted data: {e}")
@@ -90,7 +93,7 @@ def get_all_extracted_data():
     try:
         # Join extracted_data with images to get file_path
         cursor.execute("""
-            SELECT d.id, d.image_id, i.file_path, d.username, d.level, d.class, d.extracted_at 
+            SELECT d.id, d.image_id, i.file_path, d.username, d.level, d.class, d.friend, d.extracted_at 
             FROM extracted_data d
             JOIN images i ON d.image_id = i.id
             ORDER BY d.extracted_at DESC
@@ -109,7 +112,7 @@ def get_extracted_data_by_image_id(image_id):
     cursor = conn.cursor()
     try:
         cursor.execute("""
-            SELECT username, level, class 
+            SELECT username, level, class, friend 
             FROM extracted_data 
             WHERE image_id = ? 
             ORDER BY id ASC 

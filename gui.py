@@ -8,6 +8,7 @@ import traceback # Import traceback for detailed error logging
 import datetime
 import io # To handle image blob data
 import tksheet # Import tksheet
+from tksheet import bool_formatter # Import the boolean formatter
 import adbutils # Added for ADB
 from adbutils import adb # For specific adb functions
 import csv # Import the csv module
@@ -41,6 +42,9 @@ class AppGUI:
         self.tree_sort_column = 'Extraction Date' # Default sort column
         self.tree_sort_direction = 'desc' # Default sort direction
         self.tree_sort_reverse = True # Corresponding boolean flag
+
+        # Filter state for the friend column in All Data tab
+        self.friend_filter_var = tk.StringVar(value="Show All") # Default filter state
 
         # Store current PIL images for resize handlers
         self.manage_tab_pil_image = None
@@ -92,17 +96,18 @@ class AppGUI:
         
         ttk.Label(self.edit_panel, text="Extracted/Edit Data:").grid(row=0, column=0, columnspan=2, pady=5, sticky=tk.W)
 
-        # Create Sheet Widget
+        # Create Sheet Widget - Removed checkbox column_options
         self.data_sheet = tksheet.Sheet(self.edit_panel,
-                                        headers=["Username", "Level", "Class"],
+                                        headers=["Username", "Level", "Class", "Friend"],
                                         height=400, # Adjust height as needed
                                         width=450) # Adjust width as needed
         self.data_sheet.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        self.data_sheet.enable_bindings() # Enable default bindings (copy, paste, etc.)
         # Configure column widths (optional)
         self.data_sheet.column_width(column=0, width=200)
         self.data_sheet.column_width(column=1, width=70)
         self.data_sheet.column_width(column=2, width=150)
+        self.data_sheet.column_width(column=3, width=60) # Width for Friend column
+        self.data_sheet.enable_bindings() # Enable default bindings AFTER grid and width setup
 
         # Frame for Add/Remove Row buttons
         self.proc_sheet_button_frame = ttk.Frame(self.edit_panel)
@@ -162,15 +167,17 @@ class AppGUI:
         self.bulk_sheet_panel.rowconfigure(1, weight=1) # Make sheet expand
         self.bulk_sheet_panel.columnconfigure(0, weight=1) # Make sheet expand
         ttk.Label(self.bulk_sheet_panel, text="Extracted/Edit Data (Selected Image):").grid(row=0, column=0, columnspan=2, pady=5, sticky=tk.W)
+        # Create Sheet Widget - Removed checkbox column_options
         self.bulk_data_sheet = tksheet.Sheet(self.bulk_sheet_panel,
-                                        headers=["Username", "Level", "Class"],
-                                        height=400, width=450) 
+                                        headers=["Username", "Level", "Class", "Friend"],
+                                        height=400, width=450)
         self.bulk_data_sheet.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        self.bulk_data_sheet.enable_bindings() 
         self.bulk_data_sheet.column_width(column=0, width=200)
         self.bulk_data_sheet.column_width(column=1, width=70)
         self.bulk_data_sheet.column_width(column=2, width=150)
-        
+        self.bulk_data_sheet.column_width(column=3, width=60) # Width for Friend column
+        self.bulk_data_sheet.enable_bindings() # Enable default bindings AFTER grid and width setup
+
         # Frame for Add/Remove Row buttons (Bulk Tab)
         self.bulk_sheet_edit_frame = ttk.Frame(self.bulk_sheet_panel)
         self.bulk_sheet_edit_frame.grid(row=2, column=0, pady=(5,0), sticky=tk.W) # Place above other buttons
@@ -232,15 +239,17 @@ class AppGUI:
         self.manage_sheet_panel.rowconfigure(1, weight=1) 
         self.manage_sheet_panel.columnconfigure(0, weight=1) 
         ttk.Label(self.manage_sheet_panel, text="Edit Saved Data:").grid(row=0, column=0, columnspan=2, pady=5, sticky=tk.W)
+        # Create Sheet Widget - Removed checkbox column_options
         self.manage_data_sheet = tksheet.Sheet(self.manage_sheet_panel,
-                                        headers=["Username", "Level", "Class"],
-                                        height=400, width=450) 
+                                        headers=["Username", "Level", "Class", "Friend"],
+                                        height=400, width=450)
         self.manage_data_sheet.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        self.manage_data_sheet.enable_bindings() 
         self.manage_data_sheet.column_width(column=0, width=200)
         self.manage_data_sheet.column_width(column=1, width=70)
         self.manage_data_sheet.column_width(column=2, width=150)
-        
+        self.manage_data_sheet.column_width(column=3, width=60) # Width for Friend column
+        self.manage_data_sheet.enable_bindings() # Enable default bindings AFTER grid and width setup
+
         # Frame for buttons below sheet
         self.manage_button_frame = ttk.Frame(self.manage_sheet_panel)
         self.manage_button_frame.grid(row=2, column=0, pady=10)
@@ -265,19 +274,31 @@ class AppGUI:
 
         # Frame for top controls (Label + Filter)
         self.all_data_top_frame = ttk.Frame(self.all_data_panel)
-        self.all_data_top_frame.grid(row=0, column=0, columnspan=2, sticky=tk.W)
+        self.all_data_top_frame.grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 5)) # Added bottom padding
 
-        ttk.Label(self.all_data_top_frame, text="All Extracted Data (Select Row to View Image)").pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Label(self.all_data_top_frame, text="All Extracted Data").pack(side=tk.LEFT, padx=(0, 10))
 
-        # Filter Checkbox
+        # Filter Checkbox (Show Most Recent)
         self.filter_duplicates_var = tk.BooleanVar(value=False) # Default: show duplicates
         self.filter_checkbox = ttk.Checkbutton(
-            self.all_data_top_frame, 
-            text="Show Only Most Recent per User", 
-            variable=self.filter_duplicates_var, 
+            self.all_data_top_frame,
+            text="Show Only Most Recent per User",
+            variable=self.filter_duplicates_var,
             command=self.load_data_into_treeview # Refresh tree when toggled
         )
         self.filter_checkbox.pack(side=tk.LEFT, padx=(0, 10))
+
+        # Filter Combobox (Friend Status)
+        ttk.Label(self.all_data_top_frame, text="Friend Filter:").pack(side=tk.LEFT, padx=(5, 2))
+        self.friend_filter_combo = ttk.Combobox(
+            self.all_data_top_frame,
+            textvariable=self.friend_filter_var,
+            values=["Show All", "Friends Only", "Non-Friends Only"],
+            state="readonly", # Prevent typing custom values
+            width=15 # Adjust width as needed
+        )
+        self.friend_filter_combo.pack(side=tk.LEFT, padx=(0, 10))
+        self.friend_filter_combo.bind("<<ComboboxSelected>>", lambda e: self.load_data_into_treeview()) # Refresh on selection
 
         # Export Button
         self.export_button = ttk.Button(
@@ -288,12 +309,13 @@ class AppGUI:
         self.export_button.pack(side=tk.LEFT)
 
         # Treeview setup (as before)
-        columns = ('username', 'level', 'class', 'extracted_at')
+        columns = ('username', 'level', 'class', 'friend', 'extracted_at')
         self.data_tree = ttk.Treeview(self.all_data_panel, columns=columns, displaycolumns=columns, show='headings')
         # ... (headings and column setup as before) ...
         self.data_tree.heading('username', text='Username')
         self.data_tree.heading('level', text='Level')
         self.data_tree.heading('class', text='Class')
+        self.data_tree.heading('friend', text='Friend')
         self.data_tree.heading('extracted_at', text='Extraction Date')
         # Add sorting command to headers
         for col_id in columns:
@@ -304,6 +326,7 @@ class AppGUI:
         self.data_tree.column('username', width=150)
         self.data_tree.column('level', width=50, anchor=tk.CENTER)
         self.data_tree.column('class', width=100)
+        self.data_tree.column('friend', width=60, anchor=tk.CENTER)
         self.data_tree.column('extracted_at', width=150)
         self.data_tree.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
 
@@ -524,14 +547,23 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
             # Prepare data in list-of-lists format for tksheet
             sheet_data = []
             for entry in data_list:
+                # Friend value from DB is 0 or 1, convert to bool for checkbox
+                friend_bool = bool(entry.get('friend', 0)) 
                 sheet_data.append([
                     entry.get('username', ''),
                     str(entry.get('level', '')), # Level as string for sheet
-                    entry.get('class', '')
+                    entry.get('class', ''),
+                    friend_bool # Add boolean friend value for checkbox/formatter
                 ])
             # Use the target_sheet variable to set data
             target_sheet.set_sheet_data(sheet_data, reset_col_positions=True, reset_row_positions=True)
-        
+
+            check_states = [row[3] for row in sheet_data]
+            
+            # Add checkboxes to all rows in column 3
+            for r in range(len(sheet_data)):
+                target_sheet.create_checkbox(r=r, c=3, checked=check_states[r]) 
+
     def save_proc_tab_data(self):
         """Saves ALL data currently in the sheet on the PROCESSING TAB."""
         # Image ID might be None if it's newly loaded/captured
@@ -556,9 +588,14 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
             
             database.clear_extracted_data_for_image(image_id)
             saved_count = 0
-            for username, level, class_name in valid_rows_to_save:
-                 database.add_extracted_data(image_id, username, level, class_name)
-                 saved_count += 1
+            # Use validated data directly (now 4 columns)
+            for username, level, class_name, friend_bool in valid_rows_to_save:
+                 try:
+                    database.add_extracted_data(image_id, username, level, class_name, friend_bool) # Pass friend_bool directly
+                    saved_count += 1
+                 except Exception as cell_e:
+                     print(f"Error saving row ({username}): {cell_e}")
+
             messagebox.showinfo("Success", f"{saved_count} data entries saved.")
             self.load_data_into_treeview() # Refresh all data tab
             self.populate_image_listbox() # Refresh manage tab listbox
@@ -588,9 +625,14 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
             
             database.clear_extracted_data_for_image(image_id)
             saved_count = 0
-            for username, level, class_name in valid_rows_to_save:
-                 database.add_extracted_data(image_id, username, level, class_name)
-                 saved_count += 1
+            # Use validated data directly (now 4 columns)
+            for username, level, class_name, friend_bool in valid_rows_to_save:
+                 try:
+                    database.add_extracted_data(image_id, username, level, class_name, friend_bool) # Pass friend_bool directly
+                    saved_count += 1
+                 except Exception as cell_e:
+                     print(f"Error saving row ({username}): {cell_e}")
+
             messagebox.showinfo("Success", f"{saved_count} data entries saved.")
             self.load_data_into_treeview() # Refresh all data tab
             # Optionally refresh listbox if needed, though content doesn't change on save
@@ -604,9 +646,10 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
         valid_rows = []
         errors = []
         for i, row in enumerate(sheet_data):
-            if len(row) < 3:
-                # Ignore potentially empty trailing rows from sheet
-                if not any(str(c).strip() for c in row):
+            # Validate all 4 columns now
+            if len(row) < 4: 
+                # Ignore potentially empty trailing rows (check first 3 text, 4th bool)
+                if not any(str(c).strip() for c in row[:3]) and (len(row) < 4 or row[3] is False): 
                     continue 
                 errors.append(f"Row {i+1}: Incomplete data.")
                 continue
@@ -614,6 +657,7 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
             username = str(row[0]).strip()
             level_str = str(row[1]).strip()
             class_name = str(row[2]).strip()
+            friend_bool = row[3] # Get boolean value directly from sheet data
 
             if not username:
                 errors.append(f"Row {i+1}: Username cannot be empty.")
@@ -627,7 +671,12 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
                     errors.append(f"Row {i+1}: Level '{level_str}' must be a number.")
                     continue
             
-            valid_rows.append((username, level, class_name))
+            # Validate friend_bool is actually boolean (safety check)
+            if not isinstance(friend_bool, bool):
+                 errors.append(f"Row {i+1}: Friend column must be True/False.")
+                 continue
+
+            valid_rows.append((username, level, class_name, friend_bool)) # Append all 4 values
         return valid_rows, errors
 
     def clear_sheet(self, sheet_widget=None):
@@ -647,31 +696,50 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
         try:
             all_db_data = database.get_all_extracted_data()
             
-            # Apply filtering if checkbox is checked
-            data_to_display = []
+            # --- Apply Filters ---
+            data_after_recency_filter = []
+            # 1. Apply "Show Only Most Recent per User" filter if checked
             if self.filter_duplicates_var.get():
                 seen_usernames = set()
                 # Data is already sorted by extracted_at DESC from DB query
                 for row in all_db_data:
                     username = row[3] # Username is at index 3
                     if username not in seen_usernames:
-                        data_to_display.append(row)
+                        data_after_recency_filter.append(row)
                         seen_usernames.add(username)
             else:
-                data_to_display = all_db_data
-            
-            # Store for sorting
+                data_after_recency_filter = all_db_data
+
+            # 2. Apply "Friend" filter
+            friend_filter_value = self.friend_filter_var.get()
+            data_to_display = []
+            if friend_filter_value == "Show All":
+                data_to_display = data_after_recency_filter
+            elif friend_filter_value == "Friends Only":
+                for row in data_after_recency_filter:
+                    # friend value is at index 6 (0 or 1)
+                    if row[6] == 1: 
+                        data_to_display.append(row)
+            elif friend_filter_value == "Non-Friends Only":
+                 for row in data_after_recency_filter:
+                     # friend value is at index 6 (0 or 1)
+                     if row[6] == 0: 
+                         data_to_display.append(row)
+            # --- End Apply Filters ---
+
+            # Store final filtered data for sorting/export
             self.displayed_tree_data = data_to_display
             
             # Populate Treeview
             for row in self.displayed_tree_data:
-                db_id, image_id, file_path, username, level, class_name, timestamp_str = row
+                db_id, image_id, file_path, username, level, class_name, friend, timestamp_str = row
+                friend_display = "Yes" if friend else "No" # Format boolean for display
                 try:
                     dt_obj = datetime.datetime.fromisoformat(timestamp_str)
                     formatted_date = dt_obj.strftime("%Y-%m-%d %H:%M:%S")
                 except:
                     formatted_date = timestamp_str
-                item_id = self.data_tree.insert('', tk.END, values=(username, level, class_name, formatted_date))
+                item_id = self.data_tree.insert('', tk.END, values=(username, level, class_name, friend_display, formatted_date))
                 self.tree_data_map[item_id] = (image_id, file_path)
 
             # Apply existing sort if any
@@ -697,8 +765,11 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
         elif col_id == 'class':
             index = 5
             key_func = lambda row: str(row[index]).lower()
+        elif col_id == 'friend': # Added sorting for friend
+             index = 6
+             key_func = lambda row: int(row[index]) # Sort by integer value (0 or 1)
         elif col_id == 'extracted_at':
-            index = 6
+            index = 7 # Index shifted due to friend column
             # Convert to datetime for proper sorting, fallback to string if format fails
             def date_key(row):
                 try: return datetime.datetime.fromisoformat(row[index])
@@ -728,13 +799,14 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
             
             # Repopulate with sorted data
             for row in self.displayed_tree_data:
-                db_id, image_id, file_path, username, level, class_name, timestamp_str = row
+                db_id, image_id, file_path, username, level, class_name, friend, timestamp_str = row
+                friend_display = "Yes" if friend else "No" # Format boolean
                 try:
                     dt_obj = datetime.datetime.fromisoformat(timestamp_str)
                     formatted_date = dt_obj.strftime("%Y-%m-%d %H:%M:%S")
                 except:
                     formatted_date = timestamp_str
-                item_id = self.data_tree.insert('', tk.END, values=(username, level, class_name, formatted_date))
+                item_id = self.data_tree.insert('', tk.END, values=(username, level, class_name, friend_display, formatted_date))
                 self.tree_data_map[item_id] = (image_id, file_path)
 
     def on_tree_select(self, event):
@@ -1102,8 +1174,8 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
                 # Proceed with saving
                 database.clear_extracted_data_for_image(image_id)
                 current_item_saved_count = 0
-                for username, level, class_name in valid_rows_to_save:
-                    database.add_extracted_data(image_id, username, level, class_name) # Use image_id here
+                for username, level, class_name, friend_bool in valid_rows_to_save:
+                    database.add_extracted_data(image_id, username, level, class_name, friend_bool) # Pass friend_bool
                     current_item_saved_count += 1
                 
                 self.bulk_tree.item(item_id, tags=('processed',))
@@ -1175,8 +1247,8 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
                 
                 database.clear_extracted_data_for_image(image_id)
                 current_item_saved_count = 0
-                for username, level, class_name in valid_rows_to_save:
-                    database.add_extracted_data(image_id, username, level, class_name) # Use image_id here
+                for username, level, class_name, friend_bool in valid_rows_to_save:
+                    database.add_extracted_data(image_id, username, level, class_name, friend_bool) # Pass friend_bool
                     current_item_saved_count += 1
 
                 self.bulk_tree.item(item_id, tags=('processed',))
@@ -1230,19 +1302,22 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
                 return # User cancelled
 
             # Define CSV header
-            header = ["Username", "Level", "Class", "Extraction Date", "Image File Path"]
+            header = ["Username", "Level", "Class", "Friend", "Extraction Date", "Image File Path"]
 
             # Prepare data for CSV export (select and format needed columns)
             csv_data = []
             for row in self.displayed_tree_data:
                 # Extract data based on the structure in load_data_into_treeview
-                # (db_id, image_id, file_path, username, level, class_name, timestamp_str)
+                # (db_id, image_id, file_path, username, level, class_name, friend, timestamp_str)
                 file_path = row[2] if row[2] else "N/A"
                 username = row[3]
                 level = row[4] if row[4] is not None else ""
                 class_name = row[5] if row[5] else ""
-                timestamp_str = row[6]
+                friend = row[6] # Get friend value (0 or 1)
+                timestamp_str = row[7] # Index shifted
                 
+                friend_display = "Yes" if friend else "No" # Format for CSV
+
                 # Re-format date for consistency (optional, but good practice)
                 try:
                     dt_obj = datetime.datetime.fromisoformat(timestamp_str)
@@ -1250,7 +1325,7 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
                 except: 
                     formatted_date = timestamp_str # Fallback to original string
                 
-                csv_data.append([username, level, class_name, formatted_date, file_path])
+                csv_data.append([username, level, class_name, friend_display, formatted_date, file_path])
 
             # Write data to CSV file
             with open(filename, 'w', newline='', encoding='utf-8') as csvfile: # Specify encoding
@@ -1270,29 +1345,50 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
         sheet = self.data_sheet
         insert_idx = None
         selected_rows = sheet.get_selected_rows(get_cells=False)
-        # print(f"Add Above Proc: selected_rows = {selected_rows}") # Debug
 
         if selected_rows: # Check if the set is not empty
             insert_idx = min(selected_rows)
+        
+        # Insert the row
+        sheet.insert_row(idx=insert_idx) 
 
-        # print(f"Add Above Proc: calculated insert_idx = {insert_idx}") # Debug
-        sheet.insert_row(idx=insert_idx) # idx=None appends
+        # Determine the actual index where the row was inserted
+        if insert_idx is not None:
+            actual_insert_idx = insert_idx
+        else:
+            # If insert_idx was None, it was appended
+            actual_insert_idx = sheet.get_total_rows() - 1
+
+        # Create the checkbox in the new row (column 3)
+        if actual_insert_idx >= 0: # Ensure index is valid
+            sheet.create_checkbox(r=actual_insert_idx, c=3, checked=False, state="normal")
 
     def add_row_below_proc_sheet(self):
         """Adds a row below the last selected row in the Processing tab sheet."""
         sheet = self.data_sheet
         insert_idx = None
         selected_rows = sheet.get_selected_rows(get_cells=False)
-        # print(f"Add Below Proc: selected_rows = {selected_rows}") # Debug
 
         if selected_rows: # Check if the set is not empty
              insert_idx = max(selected_rows) + 1
+        
+        # Insert the row
+        sheet.insert_row(idx=insert_idx) 
 
-        # print(f"Add Below Proc: calculated insert_idx = {insert_idx}") # Debug
-        sheet.insert_row(idx=insert_idx) # idx=None appends
+        # Determine the actual index where the row was inserted
+        if insert_idx is not None:
+            actual_insert_idx = insert_idx
+        else:
+            # If insert_idx was None, it was appended
+            actual_insert_idx = sheet.get_total_rows() - 1
+
+        # Create the checkbox in the new row (column 3)
+        if actual_insert_idx >= 0: # Ensure index is valid
+             sheet.create_checkbox(r=actual_insert_idx, c=3, checked=False, state="normal")
 
     def remove_selected_rows_from_proc_sheet(self):
         """Command for the 'Remove Selected Row(s)' button on the Processing tab."""
+        # Use the generic remove method
         self.remove_selected_rows_from_sheet(self.data_sheet)
 
     def add_row_above_bulk_sheet(self):
@@ -1300,31 +1396,74 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
         sheet = self.bulk_data_sheet
         insert_idx = None
         selected_rows = sheet.get_selected_rows(get_cells=False)
-        # print(f"Add Above Bulk: selected_rows = {selected_rows}") # Debug
         
         if selected_rows:
             insert_idx = min(selected_rows)
 
-        # print(f"Add Above Bulk: calculated insert_idx = {insert_idx}") # Debug
+        # Insert the row
         sheet.insert_row(idx=insert_idx)
+
+        # Determine the actual index where the row was inserted
+        if insert_idx is not None:
+            actual_insert_idx = insert_idx
+        else:
+            # If insert_idx was None, it was appended
+            actual_insert_idx = sheet.get_total_rows() - 1
+        
+        # Create the checkbox in the new row (column 3)
+        if actual_insert_idx >= 0: # Ensure index is valid
+            sheet.create_checkbox(r=actual_insert_idx, c=3, checked=False, state="normal")
+
 
     def add_row_below_bulk_sheet(self):
         """Adds a row below the last selected row in the Bulk Processing tab sheet."""
         sheet = self.bulk_data_sheet
         insert_idx = None
         selected_rows = sheet.get_selected_rows(get_cells=False)
-        # print(f"Add Below Bulk: selected_rows = {selected_rows}") # Debug
 
         if selected_rows:
              insert_idx = max(selected_rows) + 1
 
-        # print(f"Add Below Bulk: calculated insert_idx = {insert_idx}") # Debug
+        # Insert the row
         sheet.insert_row(idx=insert_idx)
+
+        # Determine the actual index where the row was inserted
+        if insert_idx is not None:
+            actual_insert_idx = insert_idx
+        else:
+            # If insert_idx was None, it was appended
+            actual_insert_idx = sheet.get_total_rows() - 1
+
+        # Create the checkbox in the new row (column 3)
+        if actual_insert_idx >= 0: # Ensure index is valid
+            sheet.create_checkbox(r=actual_insert_idx, c=3, checked=False, state="normal")
 
     # --- ADDED MISSING METHOD --- 
     def remove_selected_rows_from_bulk_sheet(self):
         """Command for the 'Remove Selected Row(s)' button on the Bulk Processing tab."""
+        # Use the generic remove method
         self.remove_selected_rows_from_sheet(self.bulk_data_sheet)
+
+    # --- MISSING remove_selected_rows_from_sheet METHOD ---
+    # Add a general method to handle row removal from any sheet
+    def remove_selected_rows_from_sheet(self, sheet_widget):
+        """Removes the currently selected row(s) from the specified sheet widget."""
+        selected_rows = sheet_widget.get_selected_rows(get_cells=False)
+        if not selected_rows:
+            # print(f"Remove Rows: No rows selected in {sheet_widget}.") # Debug
+            return
+
+        # Sort selected rows in descending order to avoid index issues during deletion
+        rows_to_delete = sorted(list(selected_rows), reverse=True)
+        # print(f"Remove Rows: Deleting rows {rows_to_delete} from {sheet_widget}.") # Debug
+
+        for row_idx in rows_to_delete:
+            sheet_widget.delete_row(row_idx)
+        
+        # Optionally, re-select a row or clear selection after deletion
+        sheet_widget.deselect("all") # Clear selection after deleting
+        # print(f"Remove Rows: Deletion complete for {sheet_widget}.") # Debug
+
 
 
 # --- Main Execution ---
