@@ -157,9 +157,6 @@ def extract_data_easyocr(image_path):
     two_word_classes = {c.lower() for c in classes_lower if " " in c and len(c.split()) == 2}
     three_word_classes = {c.lower() for c in classes_lower if " " in c and len(c.split()) == 3} # e.g., Battle Master
 
-    print(three_word_classes)
-    print(two_word_classes)
-
     processed_tokens = []
     i = 0
     while i < len(tokens):
@@ -190,20 +187,23 @@ def extract_data_easyocr(image_path):
     state = "username"
     data = {'username': '', 'level': 0, 'class': ''}
     extracted_data = []
-    for token in processed_tokens:
-        if token.lower().startswith('level'):
-            state = "level"
-            continue
-
+    for index, token in enumerate(processed_tokens):
         if state == "username":
-            data['username'] += ' ' + token
+            if token.lower().startswith('level'):
+                if index < len(processed_tokens) - 1 and processed_tokens[index + 1].isdigit():
+                    state = "level"
+                else:
+                    state = "class"
+            else:
+                data['username'] += ' ' + token
         elif state == "level":
-            data['level'] = int(token)
+            if token.isdigit():
+                data['level'] = int(token)
             state = "class"
         else:
             data['class'] += token
 
-            if len(data['username']) != 0 and data['level'] != 0 and len(data['class']) != 0:
+            if len(data['username']) != 0 and len(data['class']) != 0:
                  extracted_data.append(data)
             else:
                 print(f"[Warning] Could not extract complete data: U='{data['username']}', L={data['level']}, C='{data['class']}'")    
