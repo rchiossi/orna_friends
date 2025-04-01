@@ -86,6 +86,9 @@ class AppGUI:
         # --- Right Panel (in Tab 1): Editable Data Sheet & Save ---
         self.edit_panel = ttk.Frame(self.processing_tab, padding="10")
         self.edit_panel.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S), padx=5, pady=5)
+        # Make sheet row expandable
+        self.edit_panel.rowconfigure(1, weight=1) 
+        self.edit_panel.columnconfigure(0, weight=1) 
         
         ttk.Label(self.edit_panel, text="Extracted/Edit Data:").grid(row=0, column=0, columnspan=2, pady=5, sticky=tk.W)
 
@@ -101,10 +104,21 @@ class AppGUI:
         self.data_sheet.column_width(column=1, width=70)
         self.data_sheet.column_width(column=2, width=150)
 
-        self.save_button = ttk.Button(self.edit_panel, text="Save All Data from Sheet", command=self.save_proc_tab_data, state=tk.DISABLED)
-        self.save_button.grid(row=2, column=0, columnspan=2, pady=10)
+        # Frame for Add/Remove Row buttons
+        self.proc_sheet_button_frame = ttk.Frame(self.edit_panel)
+        self.proc_sheet_button_frame.grid(row=2, column=0, pady=(5,0), sticky=tk.W) # Place above save
 
-        self.edit_panel.columnconfigure(1, weight=1) # Allow entry fields to expand
+        self.proc_add_above_button = ttk.Button(self.proc_sheet_button_frame, text="Add Above", command=self.add_row_above_proc_sheet)
+        self.proc_add_above_button.pack(side=tk.LEFT, padx=(0, 5))
+
+        self.proc_add_below_button = ttk.Button(self.proc_sheet_button_frame, text="Add Below", command=self.add_row_below_proc_sheet)
+        self.proc_add_below_button.pack(side=tk.LEFT, padx=5)
+        
+        self.proc_remove_row_button = ttk.Button(self.proc_sheet_button_frame, text="Remove Selected Row(s)", command=self.remove_selected_rows_from_proc_sheet)
+        self.proc_remove_row_button.pack(side=tk.LEFT, padx=5)
+
+        self.save_button = ttk.Button(self.edit_panel, text="Save All Data from Sheet", command=self.save_proc_tab_data, state=tk.DISABLED)
+        self.save_button.grid(row=3, column=0, columnspan=2, pady=(5,10)) # Move save button down
 
         # --- Tab 2: Bulk Processing ---
         self.bulk_tab = ttk.Frame(self.notebook, padding="10")
@@ -157,9 +171,22 @@ class AppGUI:
         self.bulk_data_sheet.column_width(column=1, width=70)
         self.bulk_data_sheet.column_width(column=2, width=150)
         
-        # Frame for buttons below sheet
+        # Frame for Add/Remove Row buttons (Bulk Tab)
+        self.bulk_sheet_edit_frame = ttk.Frame(self.bulk_sheet_panel)
+        self.bulk_sheet_edit_frame.grid(row=2, column=0, pady=(5,0), sticky=tk.W) # Place above other buttons
+
+        self.bulk_add_above_button = ttk.Button(self.bulk_sheet_edit_frame, text="Add Above", command=self.add_row_above_bulk_sheet)
+        self.bulk_add_above_button.pack(side=tk.LEFT, padx=(0, 5))
+
+        self.bulk_add_below_button = ttk.Button(self.bulk_sheet_edit_frame, text="Add Below", command=self.add_row_below_bulk_sheet)
+        self.bulk_add_below_button.pack(side=tk.LEFT, padx=5)
+        
+        self.bulk_remove_row_button = ttk.Button(self.bulk_sheet_edit_frame, text="Remove Selected Row(s)", command=self.remove_selected_rows_from_bulk_sheet)
+        self.bulk_remove_row_button.pack(side=tk.LEFT, padx=5)
+
+        # Frame for Process/Save buttons below sheet
         self.bulk_button_frame = ttk.Frame(self.bulk_sheet_panel)
-        self.bulk_button_frame.grid(row=2, column=0, pady=10)
+        self.bulk_button_frame.grid(row=3, column=0, pady=(5,10)) # Move this frame down
         
         self.bulk_process_selected_button = ttk.Button(self.bulk_button_frame, text="Process Selected", command=self.process_selected_bulk, state=tk.DISABLED)
         self.bulk_process_selected_button.pack(side=tk.LEFT, padx=5)
@@ -1235,3 +1262,73 @@ Is ADB installed and in PATH? Is a device connected and authorized?")
         except Exception as e:
             messagebox.showerror("Export Error", f"Failed to export data to CSV: {e}")
             traceback.print_exc()
+
+    # --- Sheet Manipulation Methods ---
+
+    def add_row_above_proc_sheet(self):
+        """Adds a row above the first selected row in the Processing tab sheet."""
+        sheet = self.data_sheet
+        insert_idx = None
+        selected_rows = sheet.get_selected_rows(get_cells=False)
+        # print(f"Add Above Proc: selected_rows = {selected_rows}") # Debug
+
+        if selected_rows: # Check if the set is not empty
+            insert_idx = min(selected_rows)
+
+        # print(f"Add Above Proc: calculated insert_idx = {insert_idx}") # Debug
+        sheet.insert_row(idx=insert_idx) # idx=None appends
+
+    def add_row_below_proc_sheet(self):
+        """Adds a row below the last selected row in the Processing tab sheet."""
+        sheet = self.data_sheet
+        insert_idx = None
+        selected_rows = sheet.get_selected_rows(get_cells=False)
+        # print(f"Add Below Proc: selected_rows = {selected_rows}") # Debug
+
+        if selected_rows: # Check if the set is not empty
+             insert_idx = max(selected_rows) + 1
+
+        # print(f"Add Below Proc: calculated insert_idx = {insert_idx}") # Debug
+        sheet.insert_row(idx=insert_idx) # idx=None appends
+
+    def remove_selected_rows_from_proc_sheet(self):
+        """Command for the 'Remove Selected Row(s)' button on the Processing tab."""
+        self.remove_selected_rows_from_sheet(self.data_sheet)
+
+    def add_row_above_bulk_sheet(self):
+        """Adds a row above the first selected row in the Bulk Processing tab sheet."""
+        sheet = self.bulk_data_sheet
+        insert_idx = None
+        selected_rows = sheet.get_selected_rows(get_cells=False)
+        # print(f"Add Above Bulk: selected_rows = {selected_rows}") # Debug
+        
+        if selected_rows:
+            insert_idx = min(selected_rows)
+
+        # print(f"Add Above Bulk: calculated insert_idx = {insert_idx}") # Debug
+        sheet.insert_row(idx=insert_idx)
+
+    def add_row_below_bulk_sheet(self):
+        """Adds a row below the last selected row in the Bulk Processing tab sheet."""
+        sheet = self.bulk_data_sheet
+        insert_idx = None
+        selected_rows = sheet.get_selected_rows(get_cells=False)
+        # print(f"Add Below Bulk: selected_rows = {selected_rows}") # Debug
+
+        if selected_rows:
+             insert_idx = max(selected_rows) + 1
+
+        # print(f"Add Below Bulk: calculated insert_idx = {insert_idx}") # Debug
+        sheet.insert_row(idx=insert_idx)
+
+    # --- ADDED MISSING METHOD --- 
+    def remove_selected_rows_from_bulk_sheet(self):
+        """Command for the 'Remove Selected Row(s)' button on the Bulk Processing tab."""
+        self.remove_selected_rows_from_sheet(self.bulk_data_sheet)
+
+
+# --- Main Execution ---
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = AppGUI(root)
+    root.mainloop()
